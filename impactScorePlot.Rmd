@@ -1,0 +1,203 @@
+---
+title: "Code to calculate impact score"
+author: EICAT working group
+date: 2023
+output: pdf_document
+---
+
+
+
+
+
+
+The code below uses a specific data structure, from the Acacia data of Sabrina.
+
+```{r}
+
+library(plyr)
+library(dplyr)
+library(readxl)
+
+dat <- readxl::read_xls('EICAT_Acacia_dataset.xls')
+
+dat$ordination_score <- as.numeric(dat$ordination_score)
+dat$ordination_confidence <- as.numeric(dat$ordination_confidence)
+# must rename some columns that have odd formatting issues
+# this assumes that column 2 is the alienSpecies column
+colnames(dat)[2] <- 'alienSpecies'
+
+
+# estimated weighted confidence (done below in the `makePlot` function)
+conf <- dat |> 
+    group_by(alienSpecies) |>
+    summarise(weightMean=weighted.mean(ordination_score, w=ordination_confidence, na.rm=TRUE), 
+    numRecords=length(!is.na(ordination_score)))
+conf2 <- conf[which(!is.nan(conf$weightMean)), ]
+
+unSpecies <- conf2$alienSpecies
+
+# an example species for initial exploration
+tmp <- dplyr::filter(dat, alienSpecies=='Acacia dealbata')
+
+```
+
+
+
+```{r}
+
+#' @param dat the data object in similar format to the acacia 
+#'  columns named ordination_score, ordination_confidence, and alienSpecies
+#' @param species species name
+#' @param save do you want the plot to be saved as png?
+#' @param type type=1 is original bit, type=2 is second pass
+#'
+#' @results outputs weighted mean and plot
+
+makePlot <- function(dat, species='Acacia dealbata', 
+    save=FALSE, type=1, axis=TRUE){
+    tmp <- dat[which(dat$alienSpecies == species), ]
+
+    Wmeansd <- function(x, weights) {
+        xm <- weighted.mean(x, weights, na.rm = TRUE)
+        variance <- sum((weights * (x - xm)^2) / (sum(weights[!is.na(x)]) - 1), 
+            na.rm = TRUE)
+        sd <- sqrt(variance)
+        return(c(xm,sd))
+    }
+    score <- try(Wmeansd(tmp$ordination_score, 
+        w=tmp$ordination_confidence))
+    if(inherits(score, 'try-error')){
+        score <- c(NA, NA)
+    }
+
+    species <- unlist(as.character(species))
+    if(save){png('tad.png', width=6, height=3)}
+    plot(x=seq(0,1, length.out=10), y=rep(0.5,10), type='l', 
+        axes=FALSE, xlab='', ylab='', 
+        main=substitute(paste(italic(species))), lwd=2,
+        ylim=c(0.45,0.55))
+
+    if(type==1){
+        points(x=tmp$ordination_score, y=jitter(rep(0.5, nrow(tmp))), 
+            pch=16, col=viridis::viridis(5)[as.factor(cut(tmp$ordination_confidence, 5))])
+    }
+    if(type==2){
+        tmp2 <- (tmp[, c('ordination_score', 'ordination_confidence')])
+        tmp2 <- tmp[!is.na(tmp2$ordination_score), ]
+        tmp2 <- tmp2[order(tmp2$ordination_score), ]
+        y2 <- table(tmp2$ordination_score)
+        pos <- seq(0.5, 0.55, length.out=max(y2))
+        y3 <- c()
+        #colz <- viridis::viridis(3)[as.factor(cut(tmp2$ordination_confidence, 3))]
+        for(i in 1:length(y2)){
+            y3 <- c(y3, pos[1:y2[i]])
+            #colz <- c(colz, colz[1:y2[i]])
+        }
+        points(x=tmp2$ordination_score, 
+            y=y3, 
+            pch=16, col=viridis::viridis(3)[as.factor(cut(tmp2$ordination_confidence, 3))])
+
+    }
+    if(axis){
+        axis(1, at=c(0, 0.25, 0.5, 0.75, 1), 
+            labels=c('Minimal', 'Minor', 'Moderate', 'Major', 'Massive'))
+    }
+    segments(x0=score[1]+score[2], x1=score[1]-score[2], 
+        y0=0.5, lwd=4, col='grey')
+    points(x=score[1], y=0.5, pch=16, cex=4)
+    text(x=0.5, y=0.48, 'Impact score')
+    if(save){dev.off()}
+
+    return(score)
+}
+
+```
+
+
+
+
+
+Visualizing impact score for each Acacia species for which we had enough data. Outputs the weighted mean and weighted standard deviation for each and creates the plots. 
+
+```{r}
+
+pdf('figures/leAcacia.pdf')
+layout(matrix(1:15, ncol=3))
+par(mar=c(1,1,1,0))
+for(i in 1:15){
+    makePlot(dat, species=conf2$alienSpecies[i], type=2, axis=FALSE)
+}
+legend('bottomright', c('Low', 'Moderate', 'High'), pch=16, ncol=3, 
+    bty='n', col=viridis::viridis(3), title='Confidence')
+
+dev.off()
+
+```
+
+
+
+
+
+
+### Pulling out mechanism 
+
+I like the idea of using the underlying mechanism, so the code below pulls out the mechanism and uses a binary column to indicate proposed mechanism for each record. 
+
+```{r}
+
+indz <- regmatches(dat$Mechanism, 
+    gregexpr("[[:digit:]]+", dat$Mechanism))  
+
+unMechz <- unique(unlist(indz))
+mechz <- matrix(0, ncol=length(unMechz), nrow=nrow(dat))
+colnames(mechz) <- unMechz
+
+
+for(i in 1:length(inds)){
+    if(length(indz[[i]])!=0 ){
+        mechz[i, colnames(mechz) %in% indz[[i]]] <- 1
+    }
+}
+
+mechz <- as.data.frame(mechz)
+
+dat2 <- as.data.frame(cbind(dat, mechz))
+
+```
+
+
+
+
+Some plotting of the distribution of the number of mechanisms per record and the relationship between the impact score (not the weighted one) and the number of mechanisms. 
+
+```{r}
+png('figures/distroMechz.png')
+hist(rowSums(dat2[,17:22]), 
+    xlab='Number of mechanisms', main='', 
+    col=adjustcolor('dodgerblue', 0.5), border='dodgerblue')
+dev.off()
+
+
+
+png('figures/scoreAndMechNum.png')
+plot(as.factor(dat2$ordination_score), rowSums(dat2[,17:22]), 
+    pch=16, xlab='Impact score', ylab='Number of mechanisms')
+dev.off()
+
+```
+
+
+
+
+Starting to visualize the distribution of mechanisms per record per species
+
+```{r}
+
+tmp2 <- dplyr::filter(dat2, alienSpecies=='Acacia dealbata')
+
+tmp3 <- as.matrix(tmp2[,17:23])
+tmp3[tmp3==0] <- NA 
+lattice::levelplot(tmp3)
+
+```
+
